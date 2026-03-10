@@ -1,0 +1,19 @@
+# Python 関連（実行ファイルやキャッシュ）
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+
+# 環境変数（APIキーなどの機密情報）
+.env
+
+# データベース（個人の分析結果を含むため基本は除外）
+data/*.sqlite
+
+# VS Code の個人設定
+.vscode/
+
+# OS の一時ファイル
+.DS_Store
+Thumbs.db
