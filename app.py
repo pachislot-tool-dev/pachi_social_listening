@@ -4,51 +4,74 @@ import pandas as pd
 import altair as alt
 import os
 import sys
+import re
 from datetime import datetime, timedelta
 
-# プロジェクトディレクトリをパスに追加して config.py をインポートできるようにする
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from config import DB_PATH
-import config
-from database import init_db
-import re
-
-# データベースの初期化/マイグレーション
-init_db()
-
-# ページ設定
+# --- 1. ページ設定を一番最初に記述（Streamlitの厳格なルール） ---
 st.set_page_config(page_title="パチスロ分析結果ビューア", layout="wide")
 
+# --- 2. ハイブリッド設定（本番サーバー・ローカル環境の両対応） ---
+# GitHubに config.py が無くても絶対にエラーで止まらないようにする「セーフティネット」です
+API_KEY = None
+
+# ① まずStreamlit Cloudの「Secrets」を見に行く
+if "GEMINI_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+
+# ② ローカル環境（config.py）の読み込みを試みる
+try:
+    import config
+    DB_PATH = config.DB_PATH
+    BASE_DOMAIN = config.BASE_DOMAIN
+    if not API_KEY and hasattr(config, 'GEMINI_API_KEY'):
+        API_KEY = config.GEMINI_API_KEY
+except ImportError:
+    # サーバー上で config.py が無い場合のデフォルト値
+    DB_PATH = "data/pachi_social_db.sqlite"
+    BASE_DOMAIN = "5ch.net"
+    if not API_KEY:
+        API_KEY = os.getenv("GEMINI_API_KEY")
+
+# プロジェクトディレクトリをパスに追加
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# --- 3. データベースの初期化 ---
+try:
+    from database import init_db
+    init_db()
+except Exception as e:
+    # database.py 側でエラーが起きてもアプリ全体を落とさないための保険
+    pass
+
+# --- 4. スタイル設定 ---
 st.markdown("""
     <style>
-    /* 1. 全体の余白（パディング）をスマホ向けに最小化 */
+    /* 全体の余白（パディング）をスマホ向けに最小化 */
     .block-container {
         padding-top: 3.5rem !important;
         padding-bottom: 0rem !important;
         padding-left: 0.8rem !important;
         padding-right: 0.8rem !important;
     }
-    
-    /* 2. メインタイトル（書き込み分析結果）のサイズ調整 */
+    /* メインタイトル（書き込み分析結果）のサイズ調整 */
     h1 {
         font-size: 1.6rem !important;
-        white-space: nowrap !important; /* 強制1行 */
+        white-space: nowrap !important;
     }
-    
-    /* 3. 機種名（Header）のサイズ調整 */
+    /* 機種名（Header）のサイズ調整 */
     h2 {
         font-size: 1.3rem !important;
         line-height: 1.2 !important;
     }
-    
-    /* 4. タブの文字サイズを少し小さくして1画面に収まりやすくする */
+    /* タブの文字サイズを少し小さくして1画面に収まりやすくする */
     button[data-baseweb="tab"] > div > p {
         font-size: 0.9rem !important;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# データベースから機種名一覧と年を取得
+# --- 5. データ読み込み関数 ---
+@st.cache_data(ttl=300) # 5分間キャッシュして動作を軽くする最適化
 def load_machine_names_by_year():
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -84,7 +107,6 @@ def load_machine_names_by_year():
                 
         return groups_by_year, group_to_machines
     except Exception as e:
-        st.error(f"データベースの読み込みに失敗しました: {e}")
         return {}, {}
 
 groups_by_year, group_to_machines = load_machine_names_by_year()
@@ -93,10 +115,9 @@ if not groups_by_year:
     st.warning("データが見つかりません。先にデータベースへデータが保存されているか確認してください。")
     st.stop()
 
-# サイドバー
+# --- 6. サイドバー ---
 st.sidebar.header("設定")
 years = list(groups_by_year.keys())
-# "未設定" を一番下にするためのソート
 years = sorted(years, key=lambda x: (str(x) != "未設定", x), reverse=True)
 
 selected_year = st.sidebar.selectbox("年を選択", years)
@@ -105,18 +126,11 @@ selected_group = st.sidebar.selectbox("分析する機種名を選択", groups_i
 target_machines = group_to_machines[selected_group]
 rep_machine = target_machines[0]
 
-# 管理者設定
 st.sidebar.markdown("---")
 st.sidebar.header("管理者設定")
 admin_password = st.sidebar.text_input("パスワード", type="password")
 
-current_year = ""
-current_release_date = ""
-special_label = ""
-special_start = ""
-special_end = ""
-current_display_name = ""
-is_active_flag = True
+current_year, current_release_date, special_label, special_start, special_end, current_display_name, is_active_flag = "", "", "", "", "", "", True
 
 try:
     conn = sqlite3.connect(DB_PATH)
@@ -137,7 +151,6 @@ except Exception:
 
 if admin_password == "admin": 
     st.sidebar.subheader("機種設定")
-    
     display_name_input = st.sidebar.text_input("表示用名称（正式名称）", value=current_display_name)
     year_input = st.sidebar.text_input("年 (例: 2024)", value=current_year)
     release_date_input = st.sidebar.text_input("導入日 (例: 2024/05/20)", value=current_release_date)
@@ -163,12 +176,13 @@ if admin_password == "admin":
                 conn.commit()
                 conn.close()
                 st.sidebar.success("設定を保存しました。画面をリロードしてください。")
+                load_machine_names_by_year.clear() # 保存時にキャッシュをクリア
             except Exception as e:
                 st.sidebar.error(f"保存に失敗しました: {e}")
         else:
             st.sidebar.error("年は数値で入力してください。")
 
-# 動的タイトル
+# --- 7. メインコンテンツ ---
 st.title("書き込み分析結果")
 
 def load_data(machine_names):
@@ -180,11 +194,9 @@ def load_data(machine_names):
     df = pd.read_sql(query, conn, params=tuple(machine_names))
     conn.close()
     
-    # post_text カラムを message にリネームして後続の処理で統一する
     if 'post_text' in df.columns:
         df = df.rename(columns={'post_text': 'message'})
         
-    # 重複排除: 統合時のダブりを防ぐ
     df = df.drop_duplicates(subset=['message', 'post_date'], keep='first')
     return df
 
@@ -194,9 +206,7 @@ if df_posts.empty:
     st.warning("この機種のデータはまだありません。")
     st.stop()
 
-# df_postsのpost_dateを日付型に変換して処理しやすくする
 df_posts['post_date_dt'] = pd.to_datetime(df_posts['post_date'], errors='coerce')
-# 日付ごとの日付文字列 ('YYYY-MM-DD') を作成
 df_posts['date_only'] = df_posts['post_date_dt'].dt.strftime('%Y-%m-%d')
 
 tab1, tab2, tab3 = st.tabs(["分析まとめ", "時系列トレンド", "期間別比較"])
@@ -307,9 +317,10 @@ with tab1:
                                 reason_str = f"（理由: {p_row['reason']}）" if pd.notna(p_row['reason']) and p_row['reason'] else ""
                                 date_str = f" [{p_row['post_date']}]" if 'post_date' in p_row and pd.notna(p_row['post_date']) and p_row['post_date'] else ""
                                 
-                                text_disp = str(p_row['message']).replace("5ch.net", config.BASE_DOMAIN)
+                                # config.BASE_DOMAIN を BASE_DOMAIN に変更
+                                text_disp = str(p_row['message']).replace("5ch.net", BASE_DOMAIN)
                                 text_disp = re.sub(r'(https?://[^\s()]+)', r'[\1](\1)', text_disp)
-                                reason_disp = reason_str.replace("5ch.net", config.BASE_DOMAIN)
+                                reason_disp = reason_str.replace("5ch.net", BASE_DOMAIN)
                                 reason_disp = re.sub(r'(https?://[^\s()]+)', r'[\1](\1)', reason_disp)
                                 
                                 st.success(f"(スコア: {p_row['score']}){date_str} - {text_disp} {reason_disp}")
@@ -320,9 +331,10 @@ with tab1:
                                 reason_str = f"（理由: {p_row['reason']}）" if pd.notna(p_row['reason']) and p_row['reason'] else ""
                                 date_str = f" [{p_row['post_date']}]" if 'post_date' in p_row and pd.notna(p_row['post_date']) and p_row['post_date'] else ""
                                 
-                                text_disp = str(p_row['message']).replace("5ch.net", config.BASE_DOMAIN)
+                                # config.BASE_DOMAIN を BASE_DOMAIN に変更
+                                text_disp = str(p_row['message']).replace("5ch.net", BASE_DOMAIN)
                                 text_disp = re.sub(r'(https?://[^\s()]+)', r'[\1](\1)', text_disp)
-                                reason_disp = reason_str.replace("5ch.net", config.BASE_DOMAIN)
+                                reason_disp = reason_str.replace("5ch.net", BASE_DOMAIN)
                                 reason_disp = re.sub(r'(https?://[^\s()]+)', r'[\1](\1)', reason_disp)
                                 
                                 st.error(f"(スコア: {p_row['score']}){date_str} - {text_disp} {reason_disp}")
@@ -365,7 +377,6 @@ with tab2:
     df_trend = df_posts.dropna(subset=['date_only'])
     
     if release_dt is not None:
-        # 導入日以降のデータに絞る
         df_trend = df_trend[df_trend['post_date_dt'] >= release_dt]
         st.info(f"※導入日（{current_release_date}）以降のデータを表示しています。")
     else:
@@ -414,7 +425,6 @@ with tab3:
             df_comp = df_posts.dropna(subset=['post_date_dt']).copy()
             df_comp['days_since_release'] = (df_comp['post_date_dt'] - release_dt).dt.days
             
-            # 1週間ごとの集計（最大4週）
             weekly_stats = []
             for week in range(4):
                 start_day = week * 7
@@ -439,7 +449,6 @@ with tab3:
                     "total_valid": total_valid
                 })
                 
-            # 特定期間の集計
             special_stat = None
             if special_label and special_start and special_end:
                 sp_start_dt = pd.to_datetime(special_start.replace('/', '-'), errors='coerce')
@@ -466,7 +475,6 @@ with tab3:
                         "total_valid": total_valid
                     }
 
-            # 描画
             cols = st.columns(len(weekly_stats) + (1 if special_stat else 0))
             
             all_stats = weekly_stats.copy()
@@ -487,7 +495,7 @@ with tab3:
                             </div>
                             <div style="width: 100%; height: 16px; background-color: #f1f3f5; border-radius: 8px; overflow: hidden; display: flex;">
                                 <div style="width: {stat['pos_rate']}%; background-color: #4dabf7;"></div>
-                                <div style="width: {stat['neg_rate']}%; background-color: #ff6b6b;"></div>
+                                <div style="width: {neg_rate}%; background-color: #ff6b6b;"></div>
                             </div>
                         </div>
                         ''', unsafe_allow_html=True)
