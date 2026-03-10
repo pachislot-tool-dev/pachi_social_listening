@@ -19,6 +19,35 @@ init_db()
 # ページ設定
 st.set_page_config(page_title="パチスロ分析結果ビューア", layout="wide")
 
+st.markdown("""
+    <style>
+    /* 1. 全体の余白（パディング）をスマホ向けに最小化 */
+    .block-container {
+        padding-top: 3.5rem !important;
+        padding-bottom: 0rem !important;
+        padding-left: 0.8rem !important;
+        padding-right: 0.8rem !important;
+    }
+    
+    /* 2. メインタイトル（書き込み分析結果）のサイズ調整 */
+    h1 {
+        font-size: 1.6rem !important;
+        white-space: nowrap !important; /* 強制1行 */
+    }
+    
+    /* 3. 機種名（Header）のサイズ調整 */
+    h2 {
+        font-size: 1.3rem !important;
+        line-height: 1.2 !important;
+    }
+    
+    /* 4. タブの文字サイズを少し小さくして1画面に収まりやすくする */
+    button[data-baseweb="tab"] > div > p {
+        font-size: 0.9rem !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
 # データベースから機種名一覧と年を取得
 def load_machine_names_by_year():
     try:
@@ -140,7 +169,7 @@ if admin_password == "admin":
             st.sidebar.error("年は数値で入力してください。")
 
 # 動的タイトル
-st.title(f"🎰 パチスロ分析結果 - {selected_group}")
+st.title("書き込み分析結果")
 
 def load_data(machine_names):
     if not machine_names:
@@ -170,11 +199,12 @@ df_posts['post_date_dt'] = pd.to_datetime(df_posts['post_date'], errors='coerce'
 # 日付ごとの日付文字列 ('YYYY-MM-DD') を作成
 df_posts['date_only'] = df_posts['post_date_dt'].dt.strftime('%Y-%m-%d')
 
-tab1, tab2, tab3 = st.tabs(["基本サマリー", "時系列トレンド", "期間別比較"])
+tab1, tab2, tab3 = st.tabs(["分析まとめ", "時系列トレンド", "期間別比較"])
 
 with tab1:
     CATEGORIES = ["スペック", "ゲーム性", "演出グラフィック", "演出法則", "ホール状況", "その他"]
-    st.header(f"「{selected_group}」の詳細データ")
+    st.header(selected_group)
+    st.subheader("詳細データ")
     
     chart_data = []
     st.markdown("### 🏷️ カテゴリ別詳細")
@@ -321,7 +351,7 @@ with tab1:
             height=350
         )
         
-        st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, width="stretch")
 
 with tab2:
     st.header("📈 時系列トレンド")
@@ -367,7 +397,7 @@ with tab2:
                 height=400
             )
             
-            st.altair_chart(line_chart, use_container_width=True)
+            st.altair_chart(line_chart, width="stretch")
         else:
             st.warning("有効なスコアを持つデータがありません。")
     else:
